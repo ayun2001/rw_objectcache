@@ -36,6 +36,11 @@ type janitor struct {
 	stop         chan bool
 }
 
+type keyAndValue struct {
+	key   string
+	value interface{}
+}
+
 type ObjectCache struct {
 	defaultExpireSeconds uint32
 	elements             map[string]cacheElement
@@ -47,15 +52,15 @@ type ObjectCache struct {
 func (oc *ObjectCache) no_lock_get(key string) (interface{}, int, bool) {
 	element, found := oc.elements[key]
 	//如果元素没有找到 或者 缓存元素已经超时
-	currentTimestamp := uint32(time.Now().Unix())
-	if !found || (currentTimestamp >= element.expireAt && element.expireAt > 0) {
+	now := uint32(time.Now().Unix())
+	if !found || (now >= element.expireAt && element.expireAt > 0) {
 		return nil, ErrIntReturnNum, false
 	}
 	if element.expireAt == 0 {
 		//处理永不超时的数据
 		return element.object, NeverExpireTime, true
 	}
-	return element.object, element.expireAt - currentTimestamp, true
+	return element.object, element.expireAt - now, true
 }
 
 func (oc *ObjectCache) no_lock_set(key string, value interface{}, expireSeconds int) {
@@ -159,11 +164,68 @@ func (oc *ObjectCache) Delete(key string) {
 	oc.lock.Unlock()
 }
 
-func (oc *ObjectCache) DeleteWitchEvictedCallback(key string) {
+func (oc *ObjectCache) DeleteWitchCallback(key string) {
 	oc.lock.Lock()
 	element, evicted := oc.no_lock_delete(key, true)
 	oc.lock.Unlock()
 	if evicted {
 		oc.onEvicted(key, element)
+	}
+}
+
+func (oc *ObjectCache) DeleteAllExpired() {
+	now := uint32(time.Now().Unix())
+	oc.lock.Lock()
+	for key, element := range oc.elements {
+		if element.expireAt > 0 && now > element.expireAt {
+			oc.no_lock_delete(key, false)
+		}
+	}
+	oc.lock.Unlock()
+}
+
+func (oc *ObjectCache) DeleteAllExpiredWitchCallback() {
+	var evictedElements []keyAndValue
+	now := uint32(time.Now().Unix())
+	oc.lock.Lock()
+	for key, element := range oc.elements {
+		// "Inlining" of expired
+		if element.expireAt > 0 && now > element.expireAt {
+			object, evicted := oc.no_lock_delete(key, true)
+			if evicted {
+				evictedElements = append(evictedElements, keyAndValue{key, object})
+			}
+		}
+	}
+	oc.lock.Unlock()
+	for _, data := range evictedElements {
+		oc.onEvicted(data.key, data.value)
+	}
+}
+
+func (oc *ObjectCache) OnEvicted(fn func(string, interface{})) {
+	oc.lock.Lock()
+	oc.onEvicted = fn
+	oc.lock.Unlock()
+}
+
+func (oc *ObjectCache) Count() int {
+	oc.lock.Lock()
+	n := len(oc.elements)
+	oc.lock.Unlock()
+	return n
+}
+
+func (oc *ObjectCache) Clean() {
+	oc.lock.Lock()
+	oc.elements = map[string]cacheElement{}
+	oc.lock.Unlock()
+}
+
+func (oc *ObjectCache) IsEmpty() bool {
+	if oc.Count() == 0 {
+		return true
+	} else {
+		return false
 	}
 }
