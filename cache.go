@@ -16,8 +16,8 @@ const (
 )
 
 var (
-	ErrElementIsExist = errors.New("Element is already exists.")
-	ErrElementIsNotExist = errors.New("Element do not exists.")
+	ErrElementAlreadyExist = errors.New("Element already exists.")
+	ErrElementDoNotExist = errors.New("Element do not exists.")
 )
 
 ///=================================================================================================
@@ -42,7 +42,7 @@ type janitor struct {
 	stop         chan bool
 }
 
-type keyAndValue struct {
+type evictedElementKeyAndObject struct {
 	key   string
 	value interface{}
 }
@@ -55,7 +55,8 @@ type ObjectCache struct {
 	janitorPtr           *janitor
 }
 
-func (oc *ObjectCache) no_lock_get(key string) (interface{}, int, bool) {
+//只会获取有效的数据，不包含过期但未删除的数据 (严格模式)
+func (oc *ObjectCache) no_lock_strict_get(key string) (interface{}, int, bool) {
 	element, found := oc.elements[key]
 	//如果元素没有找到 或者 缓存元素已经超时
 	now := uint32(time.Now().Unix())
@@ -67,6 +68,16 @@ func (oc *ObjectCache) no_lock_get(key string) (interface{}, int, bool) {
 		return element.object, NeverExpireTime, true
 	}
 	return element.object, element.expireAt - now, true
+}
+
+//获得所有数据，可能包含过期但未删除的数据（宽松模式）
+func (oc *ObjectCache) no_lock_get(key string) (interface{}, bool) {
+	element, found := oc.elements[key]
+	if !found {
+		return nil, false
+	} else {
+		return element.object, true
+	}
 }
 
 func (oc *ObjectCache) no_lock_set(key string, value interface{}, expireSeconds int) {
@@ -108,13 +119,14 @@ func (oc *ObjectCache) SetWithNeverExpired(key string, value interface{}) {
 
 func (oc *ObjectCache) TrySet(key string, value interface{}, expireSeconds int) error {
 	oc.lock.Lock()
-	if _, _, found := oc.no_lock_get(key); found {
+	if _, _, found := oc.no_lock_strict_get(key); found {
 		oc.lock.Unlock()
-		return ErrElementIsExist
+		return ErrElementAlreadyExist
+	} else {
+		oc.no_lock_set(key, value, expireSeconds)
+		oc.lock.Unlock()
+		return nil
 	}
-	oc.no_lock_set(key, value, expireSeconds)
-	oc.lock.Unlock()
-	return nil
 }
 
 func (oc *ObjectCache) TrySetWithDefaultExpireSeconds(key string, value interface{}) error {
@@ -133,21 +145,46 @@ func (oc *ObjectCache) Replace(key string, value interface{}, expireSeconds int)
 
 func (oc *ObjectCache) TryReplace(key string, value interface{}, expireSeconds int) error {
 	oc.lock.Lock()
-	if _, _, found := oc.no_lock_get(key); !found {
+	if _, _, found := oc.no_lock_strict_get(key); !found {
 		oc.lock.Unlock()
-		return ErrElementIsNotExist
+		return ErrElementDoNotExist
+	} else {
+		oc.no_lock_set(key, value, expireSeconds)
+		oc.lock.Unlock()
+		return nil
 	}
-	oc.no_lock_set(key, value, expireSeconds)
-	oc.lock.Unlock()
-	return nil
+}
+
+func (oc *ObjectCache) UpdateValue(key string, value interface{}) error {
+	oc.lock.Lock()
+	if _, expireSeconds, found := oc.no_lock_strict_get(key); !found {
+		oc.lock.Unlock()
+		return ErrElementDoNotExist
+	} else {
+		oc.no_lock_set(key, value, expireSeconds)
+		oc.lock.Unlock()
+		return nil
+	}
+}
+
+func (oc *ObjectCache) UpdateExpireSeconds(key string, expireSeconds int) error {
+	oc.lock.Lock()
+	if value, _, found := oc.no_lock_strict_get(key); !found {
+		oc.lock.Unlock()
+		return ErrElementDoNotExist
+	} else {
+		oc.no_lock_set(key, value, expireSeconds)
+		oc.lock.Unlock()
+		return nil
+	}
 }
 
 func (oc *ObjectCache) Get(key string) (interface{}, error) {
 	oc.lock.RLock()
-	value, _, found := oc.no_lock_get(key)
+	value, _, found := oc.no_lock_strict_get(key)
 	oc.lock.RUnlock()
 	if !found {
-		return nil, ErrElementIsNotExist
+		return nil, ErrElementDoNotExist
 	} else {
 		return value, nil
 	}
@@ -155,13 +192,41 @@ func (oc *ObjectCache) Get(key string) (interface{}, error) {
 
 func (oc *ObjectCache) GetWithExpiration(key string) (interface{}, int, error) {
 	oc.lock.RLock()
-	value, expireSeconds, found := oc.no_lock_get(key)
+	value, expireSeconds, found := oc.no_lock_strict_get(key)
 	oc.lock.RUnlock()
 	if !found {
-		return nil, ErrIntReturnNum, ErrElementIsNotExist
+		return nil, ErrIntReturnNum, ErrElementDoNotExist
 	} else {
 		return value, expireSeconds, nil
 	}
+}
+
+func (oc *ObjectCache) GetPossiblyExpired(key string) (interface{}, error) {
+	oc.lock.RLock()
+	value, found := oc.no_lock_get(key)
+	oc.lock.RUnlock()
+	if !found {
+		return nil, ErrElementDoNotExist
+	} else {
+		return value, nil
+	}
+}
+
+func (oc *ObjectCache) Remove(key string) interface{} {
+	oc.lock.Lock()
+	object, _ := oc.no_lock_delete(key, false)
+	oc.lock.Unlock()
+	return object
+}
+
+func (oc *ObjectCache) RemoveWitchCallback(key string) interface{} {
+	oc.lock.Lock()
+	object, evicted := oc.no_lock_delete(key, true)
+	oc.lock.Unlock()
+	if evicted {
+		oc.onEvicted(key, object)
+	}
+	return object
 }
 
 func (oc *ObjectCache) Delete(key string) {
@@ -191,7 +256,7 @@ func (oc *ObjectCache) DeleteAllExpired() {
 }
 
 func (oc *ObjectCache) DeleteAllExpiredWitchCallback() {
-	var evictedElements []keyAndValue
+	var evictedElements []evictedElementKeyAndObject
 	now := uint32(time.Now().Unix())
 	oc.lock.Lock()
 	for key, element := range oc.elements {
@@ -199,7 +264,7 @@ func (oc *ObjectCache) DeleteAllExpiredWitchCallback() {
 		if element.expireAt > 0 && now >= element.expireAt {
 			object, evicted := oc.no_lock_delete(key, true)
 			if evicted {
-				evictedElements = append(evictedElements, keyAndValue{key, object})
+				evictedElements = append(evictedElements, evictedElementKeyAndObject{key, object})
 			}
 		}
 	}
@@ -217,9 +282,9 @@ func (oc *ObjectCache) OnEvicted(fn func(string, interface{})) {
 
 func (oc *ObjectCache) Count() int {
 	oc.lock.Lock()
-	n := len(oc.elements)
+	count := len(oc.elements)
 	oc.lock.Unlock()
-	return n
+	return count
 }
 
 func (oc *ObjectCache) Clean() {
@@ -259,12 +324,11 @@ func stopJanitor(objectCache *ObjectCache) {
 }
 
 func runJanitor(objectCache *ObjectCache, interval time.Duration) {
-	j := &janitor{
+	objectCache.janitorPtr = &janitor{
 		intervalTime: interval,
 		stop:         make(chan bool),
 	}
-	objectCache.janitorPtr = j
-	go j.Run(objectCache)
+	go objectCache.janitorPtr.Run(objectCache)
 }
 
 ///=================================================================================================
