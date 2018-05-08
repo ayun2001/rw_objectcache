@@ -4,6 +4,7 @@ import (
 	"time"
 	"sync"
 	"errors"
+	"runtime"
 )
 
 const (
@@ -18,6 +19,11 @@ var (
 	ErrElementIsExist = errors.New("Element is already exists.")
 	ErrElementIsNotExist = errors.New("Element do not exists.")
 )
+
+///=================================================================================================
+///
+///	对象缓存实现
+///
 
 type cacheElement struct {
 	object   interface{}
@@ -228,4 +234,60 @@ func (oc *ObjectCache) IsEmpty() bool {
 	} else {
 		return false
 	}
+}
+
+///=================================================================================================
+///
+///	后台自动清理过期对象的看门人
+///
+
+func (j *janitor) Run(oc *ObjectCache) {
+	ticker := time.NewTicker(j.intervalTime)
+	for {
+		select {
+		case <-ticker.C:
+			oc.DeleteAllExpiredWitchCallback()
+		case <-j.stop:
+			ticker.Stop()
+			return
+		}
+	}
+}
+
+func stopJanitor(objectCache *ObjectCache) {
+	objectCache.janitorPtr.stop <- true
+}
+
+func runJanitor(objectCache *ObjectCache, interval time.Duration) {
+	j := &janitor{
+		intervalTime: interval,
+		stop:     make(chan bool),
+	}
+	objectCache.janitorPtr = j
+	go j.Run(objectCache)
+}
+
+///=================================================================================================
+///
+///	创建动态缓存方法
+///
+
+func newCache(cacheDefaultExpireSeconds uint32, cacheElements map[string]cacheElement) *ObjectCache {
+	return &ObjectCache{
+		defaultExpireSeconds: cacheDefaultExpireSeconds,
+		elements:             cacheElements,
+	}
+}
+
+func newCacheWithJanitor(cacheDefaultExpireSeconds uint32, autoCleanupSeconds uint32, cacheElements map[string]cacheElement) *ObjectCache {
+	objectCache := newCache(cacheDefaultExpireSeconds, cacheElements)
+	if autoCleanupSeconds > 0 {
+		runJanitor(objectCache, time.Second * autoCleanupSeconds)
+		runtime.SetFinalizer(objectCache, stopJanitor)
+	}
+	return objectCache
+}
+
+func New(cacheDefaultExpireSeconds uint32, autoCleanupSeconds uint32) *ObjectCache {
+	return newCacheWithJanitor(cacheDefaultExpireSeconds, autoCleanupSeconds, make(map[string]cacheElement))
 }
