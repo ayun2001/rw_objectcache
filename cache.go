@@ -183,7 +183,7 @@ func (oc *ObjectCache) DeleteAllExpired() {
 	now := uint32(time.Now().Unix())
 	oc.lock.Lock()
 	for key, element := range oc.elements {
-		if element.expireAt > 0 && now > element.expireAt {
+		if element.expireAt > 0 && now >= element.expireAt {
 			oc.no_lock_delete(key, false)
 		}
 	}
@@ -196,7 +196,7 @@ func (oc *ObjectCache) DeleteAllExpiredWitchCallback() {
 	oc.lock.Lock()
 	for key, element := range oc.elements {
 		// "Inlining" of expired
-		if element.expireAt > 0 && now > element.expireAt {
+		if element.expireAt > 0 && now >= element.expireAt {
 			object, evicted := oc.no_lock_delete(key, true)
 			if evicted {
 				evictedElements = append(evictedElements, keyAndValue{key, object})
