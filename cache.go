@@ -75,6 +75,17 @@ func (oc *ObjectCache) no_lock_set(key string, value interface{}, expireSeconds 
 	oc.elements[key] = cacheElement{object:value, expireAt:expireAt}
 }
 
+func (oc *ObjectCache) no_lock_delete(key string, enable bool) (interface{}, bool) {
+	if oc.onEvicted != nil  && enable {
+		if element, found := oc.elements[key]; found {
+			delete(oc.elements, key)
+			return element.object, true
+		}
+	}
+	delete(oc.elements, key)
+	return nil, false
+}
+
 func (oc *ObjectCache) Set(key string, value interface{}, expireSeconds int) {
 	oc.lock.Lock()
 	oc.no_lock_set(key, value, expireSeconds)
@@ -145,17 +156,6 @@ func (oc *ObjectCache) GetWithExpiration(key string) (interface{}, int, error) {
 	} else {
 		return value, expireSeconds, nil
 	}
-}
-
-func (oc *ObjectCache) no_lock_delete(key string, enable bool) (interface{}, bool) {
-	if oc.onEvicted != nil  && enable {
-		if element, found := oc.elements[key]; found {
-			delete(oc.elements, key)
-			return element.object, true
-		}
-	}
-	delete(oc.elements, key)
-	return nil, false
 }
 
 func (oc *ObjectCache) Delete(key string) {
