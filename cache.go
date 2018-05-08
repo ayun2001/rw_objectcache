@@ -1,10 +1,10 @@
 package rw_objectcache
 
 import (
-	"time"
-	"sync"
 	"errors"
 	"runtime"
+	"sync"
+	"time"
 )
 
 const (
@@ -78,11 +78,11 @@ func (oc *ObjectCache) no_lock_set(key string, value interface{}, expireSeconds 
 	if expireSeconds > 0 {
 		expireAt = uint32(time.Now().Add(expireSeconds).Unix())
 	}
-	oc.elements[key] = cacheElement{object:value, expireAt:expireAt}
+	oc.elements[key] = cacheElement{object: value, expireAt: expireAt}
 }
 
 func (oc *ObjectCache) no_lock_delete(key string, enable bool) (interface{}, bool) {
-	if oc.onEvicted != nil  && enable {
+	if oc.onEvicted != nil && enable {
 		if element, found := oc.elements[key]; found {
 			delete(oc.elements, key)
 			return element.object, true
@@ -261,7 +261,7 @@ func stopJanitor(objectCache *ObjectCache) {
 func runJanitor(objectCache *ObjectCache, interval time.Duration) {
 	j := &janitor{
 		intervalTime: interval,
-		stop:     make(chan bool),
+		stop:         make(chan bool),
 	}
 	objectCache.janitorPtr = j
 	go j.Run(objectCache)
@@ -276,6 +276,7 @@ func newCache(cacheDefaultExpireSeconds uint32, cacheElements map[string]cacheEl
 	return &ObjectCache{
 		defaultExpireSeconds: cacheDefaultExpireSeconds,
 		elements:             cacheElements,
+		lock:                 new(sync.RWMutex),
 	}
 }
 
