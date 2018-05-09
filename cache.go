@@ -2,6 +2,8 @@ package rw_objectcache
 
 import (
 	"errors"
+	"math"
+	"reflect"
 	"runtime"
 	"sync"
 	"time"
@@ -25,6 +27,7 @@ const (
 var (
 	ErrElementAlreadyExist = errors.New("Element already exists.")
 	ErrElementDoNotExist   = errors.New("Element do not exists.")
+	ErrElementIsNotNumeric = errors.New("Element is not Int64.")
 )
 
 ///=================================================================================================
@@ -37,11 +40,12 @@ type cacheElement struct {
 	expireAt uint32
 }
 
-func (el cacheElement) IsExpired() bool {
-	if el.expireAt == 0 {
+func (el cacheElement) IsInt64() bool {
+	if reflect.TypeOf(el.object).Kind() == reflect.Int64 {
+		return true
+	} else {
 		return false
 	}
-	return uint32(time.Now().Unix()) >= el.expireAt
 }
 
 type janitor struct {
@@ -114,6 +118,37 @@ func (oc *ObjectCache) no_lock_set(key string, value interface{}, expireSeconds 
 		expireAt = uint32(time.Now().Add(expireSeconds).Unix())
 	}
 	oc.elements[key] = cacheElement{object: value, expireAt: expireAt}
+}
+
+func (oc *ObjectCache) no_lock_incr(key string, step int64, expireSeconds int64) (int64, error) {
+	if element, found := oc.elements[key]; found {
+		if element.IsInt64() && (element.object.(int64) < (math.MaxInt64 - step)) {
+			element.object.(int64) += step
+			oc.no_lock_set(key, element.object, expireSeconds)
+			return element.object.(int64), nil
+		} else {
+			return 0, ErrElementIsNotNumeric
+		}
+	} else {
+		oc.no_lock_set(key, step, expireSeconds)
+		return step, nil
+	}
+}
+
+func (oc *ObjectCache) no_lock_decr(key string, step int64, expireSeconds int64) (int64, error) {
+	if element, found := oc.elements[key]; found {
+		if element.IsInt64() && (element.object.(int64) > (math.MinInt64 + step)) {
+			element.object.(int64) -= step
+			oc.no_lock_set(key, element.object, expireSeconds)
+			return element.object.(int64), nil
+		} else {
+			return 0, ErrElementIsNotNumeric
+		}
+	} else {
+		value := 0 - step
+		oc.no_lock_set(key, value, expireSeconds)
+		return value, nil
+	}
 }
 
 func (oc *ObjectCache) no_lock_delete(key string) (interface{}, bool) {
@@ -346,11 +381,45 @@ func (oc *ObjectCache) EnableEvictedCallback(enable bool) {
 	oc.enableEvictedCallback = enable
 }
 
-func (oc *ObjectCache) Count() int {
+func (oc *ObjectCache) Increment(key string, step int64, expireSeconds int64) (value int64, err error) {
 	oc.lock.Lock()
-	count := len(oc.elements)
+	value, err = oc.no_lock_incr(key, step, expireSeconds)
 	oc.lock.Unlock()
-	return count
+	return
+}
+
+func (oc *ObjectCache) IncrementWithDefaultStep(key string, expireSeconds int64) (value int64, err error) {
+	value, err = oc.Increment(key, 1, expireSeconds)
+	return
+}
+
+func (oc *ObjectCache) IncrementWithDefaultExpireSeconds(key string, step int64) (value int64, err error) {
+	value, err = oc.Increment(key, step, oc.defaultExpireSeconds)
+	return
+}
+
+func (oc *ObjectCache) Decrement(key string, step int64, expireSeconds int64) (value int64, err error) {
+	oc.lock.Lock()
+	value, err = oc.no_lock_decr(key, step, expireSeconds)
+	oc.lock.Unlock()
+	return
+}
+
+func (oc *ObjectCache) DecrementWithDefaultStep(key string, expireSeconds int64) (value int64, err error) {
+	value, err = oc.Decrement(key, 1, expireSeconds)
+	return
+}
+
+func (oc *ObjectCache) DecrementWithDefaultExpireSeconds(key string, step int64) (value int64, err error) {
+	value, err = oc.Decrement(key, step, oc.defaultExpireSeconds)
+	return
+}
+
+func (oc *ObjectCache) Count() (count int) {
+	oc.lock.Lock()
+	count = len(oc.elements)
+	oc.lock.Unlock()
+	return
 }
 
 func (oc *ObjectCache) Clean() {
@@ -367,18 +436,18 @@ func (oc *ObjectCache) IsEmpty() bool {
 	}
 }
 
-func (oc *ObjectCache) Keys() []string {
+func (oc *ObjectCache) Keys() (keys []string) {
 	oc.lock.Lock()
-	keys := oc.no_lock_keys(false)
+	keys = oc.no_lock_keys(false)
 	oc.lock.Unlock()
-	return keys
+	return
 }
 
-func (oc *ObjectCache) ExpiredKeys() []string {
+func (oc *ObjectCache) ExpiredKeys() (keys []string) {
 	oc.lock.Lock()
-	keys := oc.no_lock_keys(true)
+	keys = oc.no_lock_keys(true)
 	oc.lock.Unlock()
-	return keys
+	return
 }
 
 ///=================================================================================================
@@ -444,6 +513,10 @@ func newCacheWithJanitor(cacheDefaultExpireSeconds uint32, autoCleanupSeconds ui
 
 func New(cacheDefaultExpireSeconds uint32, autoCleanupSeconds uint32) *ObjectCache {
 	return newCacheWithJanitor(cacheDefaultExpireSeconds, autoCleanupSeconds, make(map[string]cacheElement))
+}
+
+func NewExpress(cacheDefaultExpireSeconds uint32) *ObjectCache {
+	return New(cacheDefaultExpireSeconds, cacheDefaultExpireSeconds*2)
 }
 
 func NewWithDefaultSeconds() *ObjectCache {
