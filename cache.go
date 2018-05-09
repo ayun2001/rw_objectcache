@@ -64,7 +64,7 @@ type ObjectCache struct {
 }
 
 //只会获取有效的数据，不包含过期但未删除的数据 (严格模式)
-func (oc *ObjectCache) no_lock_strict_get(key string) (interface{}, int, bool) {
+func (oc *ObjectCache) no_lock_strict_get(key string) (interface{}, int64, bool) {
 	element, found := oc.elements[key]
 	if !found {
 		return nil, ErrIntReturnNum, false
@@ -77,7 +77,7 @@ func (oc *ObjectCache) no_lock_strict_get(key string) (interface{}, int, bool) {
 		if now >= element.expireAt && element.expireAt > 0 {
 			return nil, ErrIntReturnNum, false
 		}
-		return element.object, element.expireAt - now, true
+		return element.object, int64(element.expireAt) - int64(now), true
 	}
 }
 
@@ -104,7 +104,7 @@ func (oc *ObjectCache) no_lock_get(key string, enable bool) (interface{}, uint8,
 	}
 }
 
-func (oc *ObjectCache) no_lock_set(key string, value interface{}, expireSeconds int) {
+func (oc *ObjectCache) no_lock_set(key string, value interface{}, expireSeconds int64) {
 	var expireAt uint32 = 0
 	if expireSeconds == DefaultExpireTime {
 		expireAt = uint32(time.Now().Add(oc.defaultExpireSeconds).Unix())
@@ -126,7 +126,7 @@ func (oc *ObjectCache) no_lock_delete(key string) (interface{}, bool) {
 	}
 }
 
-func (oc *ObjectCache) Set(key string, value interface{}, expireSeconds int) {
+func (oc *ObjectCache) Set(key string, value interface{}, expireSeconds int64) {
 	oc.lock.Lock()
 	oc.no_lock_set(key, value, expireSeconds)
 	oc.lock.Unlock()
@@ -140,7 +140,7 @@ func (oc *ObjectCache) SetWithNeverExpired(key string, value interface{}) {
 	oc.Set(key, value, NeverExpireTime)
 }
 
-func (oc *ObjectCache) TrySet(key string, value interface{}, expireSeconds int) error {
+func (oc *ObjectCache) TrySet(key string, value interface{}, expireSeconds int64) error {
 	oc.lock.Lock()
 	if _, _, found := oc.no_lock_strict_get(key); found {
 		oc.lock.Unlock()
@@ -160,13 +160,13 @@ func (oc *ObjectCache) TrySetWithNeverExpired(key string, value interface{}) err
 	return oc.TrySet(key, value, NeverExpireTime)
 }
 
-func (oc *ObjectCache) Replace(key string, value interface{}, expireSeconds int) {
+func (oc *ObjectCache) Replace(key string, value interface{}, expireSeconds int64) {
 	oc.lock.Lock()
 	oc.no_lock_set(key, value, expireSeconds)
 	oc.lock.Unlock()
 }
 
-func (oc *ObjectCache) TryReplace(key string, value interface{}, expireSeconds int) error {
+func (oc *ObjectCache) TryReplace(key string, value interface{}, expireSeconds int64) error {
 	oc.lock.Lock()
 	if _, _, found := oc.no_lock_strict_get(key); !found {
 		oc.lock.Unlock()
@@ -190,7 +190,7 @@ func (oc *ObjectCache) UpdateValue(key string, value interface{}) error {
 	}
 }
 
-func (oc *ObjectCache) UpdateExpireSeconds(key string, expireSeconds int) error {
+func (oc *ObjectCache) UpdateExpireSeconds(key string, expireSeconds int64) error {
 	oc.lock.Lock()
 	if value, _, found := oc.no_lock_strict_get(key); !found {
 		oc.lock.Unlock()
@@ -213,7 +213,7 @@ func (oc *ObjectCache) Get(key string) (interface{}, error) {
 	}
 }
 
-func (oc *ObjectCache) GetWithExpiration(key string) (interface{}, int, error) {
+func (oc *ObjectCache) GetWithExpiration(key string) (interface{}, int64, error) {
 	oc.lock.RLock()
 	value, expireSeconds, found := oc.no_lock_strict_get(key)
 	oc.lock.RUnlock()
