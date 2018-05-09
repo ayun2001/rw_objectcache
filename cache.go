@@ -41,11 +41,7 @@ type cacheElement struct {
 }
 
 func (el cacheElement) IsInt64() bool {
-	if reflect.TypeOf(el.object).Kind() == reflect.Int64 {
-		return true
-	} else {
-		return false
-	}
+	return reflect.TypeOf(el.object).Kind() == reflect.Int64
 }
 
 type janitor struct {
@@ -381,37 +377,47 @@ func (oc *ObjectCache) EnableEvictedCallback(enable bool) {
 	oc.enableEvictedCallback = enable
 }
 
-func (oc *ObjectCache) Increment(key string, step int64, expireSeconds int64) (value int64, err error) {
+func (oc *ObjectCache) IncrementBy(key string, step int64, expireSeconds int64) (value int64, err error) {
 	oc.lock.Lock()
 	value, err = oc.no_lock_incr(key, step, expireSeconds)
 	oc.lock.Unlock()
 	return
 }
 
+func (oc *ObjectCache) Increment(key string) (value int64, err error) {
+	value, err = oc.IncrementBy(key, 1, oc.defaultExpireSeconds)
+	return
+}
+
 func (oc *ObjectCache) IncrementWithDefaultStep(key string, expireSeconds int64) (value int64, err error) {
-	value, err = oc.Increment(key, 1, expireSeconds)
+	value, err = oc.IncrementBy(key, 1, expireSeconds)
 	return
 }
 
 func (oc *ObjectCache) IncrementWithDefaultExpireSeconds(key string, step int64) (value int64, err error) {
-	value, err = oc.Increment(key, step, oc.defaultExpireSeconds)
+	value, err = oc.IncrementBy(key, step, oc.defaultExpireSeconds)
 	return
 }
 
-func (oc *ObjectCache) Decrement(key string, step int64, expireSeconds int64) (value int64, err error) {
+func (oc *ObjectCache) DecrementBy(key string, step int64, expireSeconds int64) (value int64, err error) {
 	oc.lock.Lock()
 	value, err = oc.no_lock_decr(key, step, expireSeconds)
 	oc.lock.Unlock()
 	return
 }
 
+func (oc *ObjectCache) Decrement(key string) (value int64, err error) {
+	value, err = oc.DecrementBy(key, 1, oc.defaultExpireSeconds)
+	return
+}
+
 func (oc *ObjectCache) DecrementWithDefaultStep(key string, expireSeconds int64) (value int64, err error) {
-	value, err = oc.Decrement(key, 1, expireSeconds)
+	value, err = oc.DecrementBy(key, 1, expireSeconds)
 	return
 }
 
 func (oc *ObjectCache) DecrementWithDefaultExpireSeconds(key string, step int64) (value int64, err error) {
-	value, err = oc.Decrement(key, step, oc.defaultExpireSeconds)
+	value, err = oc.DecrementBy(key, step, oc.defaultExpireSeconds)
 	return
 }
 
