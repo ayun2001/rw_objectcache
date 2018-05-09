@@ -8,16 +8,23 @@ import (
 )
 
 const (
-	ErrIntReturnNum int = -66535
-	//永不过期
-	NeverExpireTime int = -1
-	//使用默认过期 （5分钟）
-	DefaultExpireTime int = 0
+	DefaultExpireSeconds          = 30
+	DefaultAutoCleanupSeconds     = DefaultExpireSeconds * 2
+	ErrIntReturnNum           int = -2147483600
+	NeverExpireTime           int = -1
+	DefaultExpireTime         int = 0
+)
+
+const (
+	TypeExpiredElement = iota + 1
+	TypeNeverExpiredElement
+	TypeNoValidElement
+	TypeValidElement
 )
 
 var (
 	ErrElementAlreadyExist = errors.New("Element already exists.")
-	ErrElementDoNotExist = errors.New("Element do not exists.")
+	ErrElementDoNotExist   = errors.New("Element do not exists.")
 )
 
 ///=================================================================================================
@@ -48,35 +55,52 @@ type evictedElementKeyAndObject struct {
 }
 
 type ObjectCache struct {
-	defaultExpireSeconds uint32
-	elements             map[string]cacheElement
-	lock                 *sync.RWMutex
-	onEvicted            func(string, interface{})
-	janitorPtr           *janitor
+	elements              map[string]cacheElement
+	lock                  *sync.RWMutex
+	onEvicted             func(string, interface{})
+	janitorPtr            *janitor
+	enableEvictedCallback bool
+	defaultExpireSeconds  uint32
 }
 
 //只会获取有效的数据，不包含过期但未删除的数据 (严格模式)
 func (oc *ObjectCache) no_lock_strict_get(key string) (interface{}, int, bool) {
 	element, found := oc.elements[key]
-	//如果元素没有找到 或者 缓存元素已经超时
-	now := uint32(time.Now().Unix())
-	if !found || (now >= element.expireAt && element.expireAt > 0) {
+	if !found {
 		return nil, ErrIntReturnNum, false
+	} else {
+		if element.expireAt == 0 {
+			//处理永不超时的数据
+			return element.object, NeverExpireTime, true
+		}
+		now := uint32(time.Now().Unix())
+		if now >= element.expireAt && element.expireAt > 0 {
+			return nil, ErrIntReturnNum, false
+		}
+		return element.object, element.expireAt - now, true
 	}
-	if element.expireAt == 0 {
-		//处理永不超时的数据
-		return element.object, NeverExpireTime, true
-	}
-	return element.object, element.expireAt - now, true
 }
 
 //获得所有数据，可能包含过期但未删除的数据（宽松模式）
-func (oc *ObjectCache) no_lock_get(key string) (interface{}, bool) {
+func (oc *ObjectCache) no_lock_get(key string, enable bool) (interface{}, uint8, bool) {
 	element, found := oc.elements[key]
 	if !found {
-		return nil, false
+		return nil, TypeNoValidElement, false
 	} else {
-		return element.object, true
+		if enable && element.expireAt >= 0 {
+			if element.expireAt == 0 {
+				return element.object, TypeNeverExpiredElement, true
+			} else {
+				now := uint32(time.Now().Unix())
+				if now >= element.expireAt {
+					return element.object, TypeExpiredElement, true
+				} else {
+					return element.object, TypeValidElement, true
+				}
+			}
+		} else {
+			return element.object, TypeValidElement, true
+		}
 	}
 }
 
@@ -92,15 +116,14 @@ func (oc *ObjectCache) no_lock_set(key string, value interface{}, expireSeconds 
 	oc.elements[key] = cacheElement{object: value, expireAt: expireAt}
 }
 
-func (oc *ObjectCache) no_lock_delete(key string, enable bool) (interface{}, bool) {
-	if oc.onEvicted != nil && enable {
-		if element, found := oc.elements[key]; found {
-			delete(oc.elements, key)
-			return element.object, true
-		}
+func (oc *ObjectCache) no_lock_delete(key string) (interface{}, bool) {
+	if element, found := oc.elements[key]; found {
+		delete(oc.elements, key)
+		return element.object, true
+	} else {
+		delete(oc.elements, key)
+		return nil, false
 	}
-	delete(oc.elements, key)
-	return nil, false
 }
 
 func (oc *ObjectCache) Set(key string, value interface{}, expireSeconds int) {
@@ -203,7 +226,7 @@ func (oc *ObjectCache) GetWithExpiration(key string) (interface{}, int, error) {
 
 func (oc *ObjectCache) GetPossiblyExpired(key string) (interface{}, error) {
 	oc.lock.RLock()
-	value, found := oc.no_lock_get(key)
+	value, _, found := oc.no_lock_get(key, false)
 	oc.lock.RUnlock()
 	if !found {
 		return nil, ErrElementDoNotExist
@@ -212,18 +235,29 @@ func (oc *ObjectCache) GetPossiblyExpired(key string) (interface{}, error) {
 	}
 }
 
+func (oc *ObjectCache) GetPossiblyExpiredWitchType(key string) (interface{}, uint8, error) {
+	oc.lock.RLock()
+	value, dataType, found := oc.no_lock_get(key, true)
+	oc.lock.RUnlock()
+	if !found {
+		return nil, dataType, ErrElementDoNotExist
+	} else {
+		return value, dataType, nil
+	}
+}
+
 func (oc *ObjectCache) Remove(key string) interface{} {
 	oc.lock.Lock()
-	object, _ := oc.no_lock_delete(key, false)
+	object, _ := oc.no_lock_delete(key)
 	oc.lock.Unlock()
 	return object
 }
 
 func (oc *ObjectCache) RemoveWitchCallback(key string) interface{} {
 	oc.lock.Lock()
-	object, evicted := oc.no_lock_delete(key, true)
+	object, evicted := oc.no_lock_delete(key)
 	oc.lock.Unlock()
-	if evicted {
+	if evicted && oc.onEvicted != nil && oc.enableEvictedCallback {
 		oc.onEvicted(key, object)
 	}
 	return object
@@ -231,15 +265,15 @@ func (oc *ObjectCache) RemoveWitchCallback(key string) interface{} {
 
 func (oc *ObjectCache) Delete(key string) {
 	oc.lock.Lock()
-	oc.no_lock_delete(key, false)
+	oc.no_lock_delete(key)
 	oc.lock.Unlock()
 }
 
 func (oc *ObjectCache) DeleteWitchCallback(key string) {
 	oc.lock.Lock()
-	element, evicted := oc.no_lock_delete(key, true)
+	element, evicted := oc.no_lock_delete(key)
 	oc.lock.Unlock()
-	if evicted {
+	if evicted && oc.onEvicted != nil && oc.enableEvictedCallback {
 		oc.onEvicted(key, element)
 	}
 }
@@ -249,7 +283,7 @@ func (oc *ObjectCache) DeleteAllExpired() {
 	oc.lock.Lock()
 	for key, element := range oc.elements {
 		if element.expireAt > 0 && now >= element.expireAt {
-			oc.no_lock_delete(key, false)
+			oc.no_lock_delete(key)
 		}
 	}
 	oc.lock.Unlock()
@@ -262,15 +296,17 @@ func (oc *ObjectCache) DeleteAllExpiredWitchCallback() {
 	for key, element := range oc.elements {
 		// "Inlining" of expired
 		if element.expireAt > 0 && now >= element.expireAt {
-			object, evicted := oc.no_lock_delete(key, true)
-			if evicted {
+			object, evicted := oc.no_lock_delete(key)
+			if evicted && oc.onEvicted != nil && oc.enableEvictedCallback {
 				evictedElements = append(evictedElements, evictedElementKeyAndObject{key, object})
 			}
 		}
 	}
 	oc.lock.Unlock()
-	for _, data := range evictedElements {
-		oc.onEvicted(data.key, data.value)
+	if oc.onEvicted != nil && oc.enableEvictedCallback {
+		for _, data := range evictedElements {
+			oc.onEvicted(data.key, data.value)
+		}
 	}
 }
 
@@ -278,6 +314,10 @@ func (oc *ObjectCache) OnEvicted(fn func(string, interface{})) {
 	oc.lock.Lock()
 	oc.onEvicted = fn
 	oc.lock.Unlock()
+}
+
+func (oc *ObjectCache) EnableEvictedCallback(enable bool) {
+	oc.enableEvictedCallback = enable
 }
 
 func (oc *ObjectCache) Count() int {
@@ -336,18 +376,27 @@ func runJanitor(objectCache *ObjectCache, interval time.Duration) {
 ///	创建动态缓存方法
 ///
 
-func newCache(cacheDefaultExpireSeconds uint32, cacheElements map[string]cacheElement) *ObjectCache {
-	return &ObjectCache{
-		defaultExpireSeconds: cacheDefaultExpireSeconds,
-		elements:             cacheElements,
-		lock:                 new(sync.RWMutex),
-	}
-}
-
 func newCacheWithJanitor(cacheDefaultExpireSeconds uint32, autoCleanupSeconds uint32, cacheElements map[string]cacheElement) *ObjectCache {
-	objectCache := newCache(cacheDefaultExpireSeconds, cacheElements)
-	if autoCleanupSeconds > 0 {
-		runJanitor(objectCache, time.Second * autoCleanupSeconds)
+	var objectCache *ObjectCache
+	if cacheDefaultExpireSeconds == 0 {
+		objectCache = &ObjectCache{
+			defaultExpireSeconds: DefaultExpireSeconds,
+			elements:             cacheElements,
+			lock:                 new(sync.RWMutex),
+		}
+	} else {
+		objectCache = &ObjectCache{
+			defaultExpireSeconds: cacheDefaultExpireSeconds,
+			elements:             cacheElements,
+			lock:                 new(sync.RWMutex),
+		}
+	}
+	if autoCleanupSeconds >= 0 {
+		if autoCleanupSeconds == 0 {
+			runJanitor(objectCache, time.Second*DefaultAutoCleanupSeconds)
+		} else {
+			runJanitor(objectCache, time.Second*autoCleanupSeconds)
+		}
 		runtime.SetFinalizer(objectCache, stopJanitor)
 	}
 	return objectCache
@@ -355,4 +404,8 @@ func newCacheWithJanitor(cacheDefaultExpireSeconds uint32, autoCleanupSeconds ui
 
 func New(cacheDefaultExpireSeconds uint32, autoCleanupSeconds uint32) *ObjectCache {
 	return newCacheWithJanitor(cacheDefaultExpireSeconds, autoCleanupSeconds, make(map[string]cacheElement))
+}
+
+func NewWithDefaultSeconds() *ObjectCache {
+	return New(0, 0)
 }
