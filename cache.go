@@ -10,7 +10,7 @@ import (
 const (
 	DefaultExpireSeconds            = 30
 	DefaultAutoCleanupSeconds       = DefaultExpireSeconds * 2
-	ErrIntReturnNum           int64 = -2 - 9223372036854775000
+	ErrIntReturnNum           int64 = -9223372036854775000
 	NeverExpireTime           int   = -1
 	DefaultExpireTime         int   = 0
 )
