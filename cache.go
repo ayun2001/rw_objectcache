@@ -126,6 +126,32 @@ func (oc *ObjectCache) no_lock_delete(key string) (interface{}, bool) {
 	}
 }
 
+func (oc *ObjectCache) no_lock_keys(expired bool) []string {
+	dataSet := make([]string, len(oc.elements))
+	count := 0
+	now := uint32(time.Now().Unix())
+	for key, element := range oc.elements {
+		if expired {
+			if element.expireAt <= now {
+				dataSet[count] = key
+				count++
+			}
+		} else {
+			if element.expireAt == 0 || element.expireAt > now {
+				dataSet[count] = key
+				count++
+			}
+		}
+	}
+	if count > 0 {
+		keys := make([]string, count)
+		copy(keys, dataSet[:count])
+		return keys
+	} else {
+		return []string{}
+	}
+}
+
 func (oc *ObjectCache) Set(key string, value interface{}, expireSeconds int64) {
 	oc.lock.Lock()
 	oc.no_lock_set(key, value, expireSeconds)
@@ -339,6 +365,20 @@ func (oc *ObjectCache) IsEmpty() bool {
 	} else {
 		return false
 	}
+}
+
+func (oc *ObjectCache) Keys() []string {
+	oc.lock.Lock()
+	keys := oc.no_lock_keys(false)
+	oc.lock.Unlock()
+	return keys
+}
+
+func (oc *ObjectCache) ExpiredKeys() []string {
+	oc.lock.Lock()
+	keys := oc.no_lock_keys(true)
+	oc.lock.Unlock()
+	return keys
 }
 
 ///=================================================================================================
