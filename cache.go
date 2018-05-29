@@ -67,17 +67,17 @@ type ObjectCache struct {
 func (oc *ObjectCache) no_lock_strict_get(key string) (interface{}, int64, bool) {
 	element, found := oc.elements[key]
 	if !found {
-		return nil, ErrIntReturnNum, false
+		return nil, ErrIntReturnNum, false //没有能找到元素
 	} else {
 		if element.expireAt == 0 {
 			//处理永不超时的数据
-			return element.object, NeverExpireTime, true
+			return element.object, NeverExpireTime, true //永不超时数据
 		}
 		now := uint32(time.Now().Unix())
 		if now >= element.expireAt && element.expireAt > 0 {
-			return nil, ErrIntReturnNum, false
+			return element.object, ErrIntReturnNum, false //超时数据
 		}
-		return element.object, int64(element.expireAt) - int64(now), true
+		return element.object, int64(element.expireAt) - int64(now), true //正常数据
 	}
 }
 
@@ -85,21 +85,21 @@ func (oc *ObjectCache) no_lock_strict_get(key string) (interface{}, int64, bool)
 func (oc *ObjectCache) no_lock_get(key string, enable bool) (interface{}, uint8, bool) {
 	element, found := oc.elements[key]
 	if !found {
-		return nil, TypeNoValidElement, false
+		return nil, TypeNoValidElement, false //没有能找到元素
 	} else {
 		if enable && element.expireAt >= 0 {
 			if element.expireAt == 0 {
-				return element.object, TypeNeverExpiredElement, true
+				return element.object, TypeNeverExpiredElement, true //永不超时数据
 			} else {
 				now := uint32(time.Now().Unix())
 				if now >= element.expireAt {
-					return element.object, TypeExpiredElement, true
+					return element.object, TypeExpiredElement, true //超时但是没有删除的数据
 				} else {
-					return element.object, TypeValidElement, true
+					return element.object, TypeValidElement, true //正常数据
 				}
 			}
 		} else {
-			return element.object, TypeValidElement, true
+			return element.object, TypeValidElement, true //正常数据
 		}
 	}
 }
@@ -152,7 +152,6 @@ func (oc *ObjectCache) no_lock_delete(key string) (interface{}, bool) {
 		delete(oc.elements, key)
 		return element.object, true
 	} else {
-		delete(oc.elements, key)
 		return nil, false
 	}
 }
@@ -264,6 +263,9 @@ func (oc *ObjectCache) Get(key string) (interface{}, error) {
 	value, _, found := oc.no_lock_strict_get(key)
 	oc.lock.RUnlock()
 	if !found {
+		if value != nil {
+			oc.Delete(key) //惰性删除，这样比较节省CPU
+		}
 		return nil, ErrElementDoNotExist
 	} else {
 		return value, nil
@@ -275,6 +277,9 @@ func (oc *ObjectCache) GetWithExpiration(key string) (interface{}, int64, error)
 	value, expireSeconds, found := oc.no_lock_strict_get(key)
 	oc.lock.RUnlock()
 	if !found {
+		if value != nil {
+			oc.Delete(key) //惰性删除，这样比较节省CPU
+		}
 		return nil, ErrIntReturnNum, ErrElementDoNotExist
 	} else {
 		return value, expireSeconds, nil
