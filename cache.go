@@ -310,19 +310,19 @@ func (oc *ObjectCache) GetPossiblyExpiredWitchType(key string) (interface{}, uin
 
 func (oc *ObjectCache) Remove(key string) interface{} {
 	oc.lock.Lock()
-	object, _ := oc.no_lock_delete(key)
+	element, _ := oc.no_lock_delete(key)
 	oc.lock.Unlock()
-	return object
+	return element
 }
 
 func (oc *ObjectCache) RemoveWitchCallback(key string) interface{} {
 	oc.lock.Lock()
-	object, evicted := oc.no_lock_delete(key)
+	element, evicted := oc.no_lock_delete(key)
 	oc.lock.Unlock()
 	if evicted && oc.onEvicted != nil && oc.enableEvictedCallback {
-		oc.onEvicted(key, object)
+		oc.onEvicted(key, element)
 	}
-	return object
+	return element
 }
 
 func (oc *ObjectCache) Delete(key string) {
